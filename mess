@@ -5,15 +5,56 @@ use warnings;
 use warnings FATAL => 'all';
 use File::Spec::Functions 'catfile';
 use File::Basename;
-use Cwd qw(abs_path);
+use Cwd qw(abs_path getcwd);
 
-my %config = ( do "./mcf.pm" );
-my $re_opening   = $config{"opening"} // q/\{/;
-my $re_closing   = $config{"closing"} // q/\}/;
-my $re_pre_key   = $config{"pre_key"} // q//;
-my $re_assign    = $config{"assign"}  // q/:/;
-my $re_var_pre   = $config{"var"}     // q/\$/;
-my $re_class_pre = $config{"class"}   // q//;
+sub get_config {
+    # my ($file) = @_;
+    # my (undef, $base) = fileparse $file;
+    my $base = getcwd();
+    print "base: $base\n";
+    my %config = ( do "$base/mcf.pm" );
+
+    return \%config;
+}
+
+sub get_or {
+    my ($cr, $key, $default) = @_;
+    my %config = %{$cr};
+
+    return $config{$key} ? qr/@{[$config{$key}]}/m : $default;
+}
+
+sub init_re {
+    my %config = %{$_[0]};
+    my %re = ();
+
+    my %static = (
+        opening => qr/\{/m,
+        closing => qr/\}/m,
+        pre_key => qr//m,
+        assign  => qr/:/m,
+        pre_var => qr/\$/m,
+        class   => qr//m
+    );
+
+    foreach my $k (keys %static) {
+        $re{$k} = exists($config{$k}) ? qr/@{[$config{$k}]}/m : $static{$k};
+    }
+
+    my $rop = $re{"opening"};
+    my $rcl = $re{"closing"};
+    my $rpk = $re{"pre_key"};
+    my $ras = $re{"assign"};
+    my $rva = $re{"var"};
+
+}
+my %config       = %{get_config($ARGV[0])};
+my $re_opening   = get_or(\%config, "opening", q/\{/);
+my $re_closing   = get_or(\%config, "closing", q/\}/);
+my $re_pre_key   = get_or(\%config, "pre_key", q//);
+my $re_assign    = get_or(\%config, "assign" , q/:/);
+my $re_var_pre   = get_or(\%config, "pre_var", q/\$/);
+my $re_class_pre = get_or(\%config, "class"  , q//);
 my $re_start =
   qr/^\s*$re_class_pre((?:(?!$re_opening|$re_closing|;).)*?)\s*$re_opening/;
 my $re_identifier      = q/[^\s]+(?<!,)/;
@@ -43,7 +84,7 @@ sub process_class {
     my ($base_indent) = ( $fst_line =~ /^(\s*)/ );
     $fst_line =~ s/^$base_indent//;
 
-    my $out      = $fst_line;
+    my $out  = $fst_line;
     my @children = ();
 
     if ( $out =~ $re_closing ) {
@@ -51,6 +92,7 @@ sub process_class {
     }
 
     while ( my $line = <$src> ) {
+        my $matched = 0;
         $line =~ s/^\Q$base_indent\E//;
         my ($indent) = ( $line =~ /^(\s*)/ );
         if ( not $indent ) {
@@ -97,7 +139,7 @@ sub process_class {
             }
         }
 
-        $out = $out . $line;
+        $out .= $line;
     }
 
     if ($#children > -1) {
@@ -111,22 +153,21 @@ sub process_class {
 }
 
 sub process_file {
-    my ($file)   = @_;
+    my ($file, $save)   = @_;
     my $out_file = ( $file =~ s/\.mss/.css/r );
     my $out      = "";
 
     my ( undef, $base_dir ) = fileparse($file);
     open( my $src,  '<', $file )     or die "Could not open $file: $!";
-    open( my $dist, '>', $out_file ) or die $!;
+    open( my $dist, '>', $out_file ) or die $! if $save;
 
     while ( my $line = <$src> ) {
-
         # imports
         if ( $line =~ $re_import ) {
             my $path = catfile( $base_dir, $1 );
             printf "importing %s\n", $path;
-            my $res = process_file($path);
-            $res  =~ s/\s+$//;
+            my $res = process_file($path, 0);
+            $res  =~ s/\s+$/\n/;
             $line =~ s/$re_import/$res/;
         }
 
@@ -139,11 +180,11 @@ sub process_file {
         $out = $out . $line;
     }
 
-    print $dist $out;
+    print $dist $out if $save;
 
     close $src;
-    close $dist;
+    close $dist if $save;
     return $out;
 }
 
-process_file(@ARGV);
+process_file(@ARGV, 1);
