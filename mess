@@ -8,9 +8,6 @@ use File::Basename;
 use Cwd qw(abs_path);
 
 my %config = ( do "./mcf.pm" );
-
-print "@{[ %config ]}\n";
-
 my $re_opening   = $config{"opening"} // q/\{/;
 my $re_closing   = $config{"closing"} // q/\}/;
 my $re_pre_key   = $config{"pre_key"} // q//;
@@ -35,8 +32,8 @@ sub process_start {
     my $old_name = $name;
     $name =~ s/&/$path/;
     $line =~ s/\Q$old_name\E/$name/;
-    $line =~ s/$re_opening/{/;
-    # $line =~ s/\Q$re_class_pre\E//;
+    $line =~ s/$re_opening/{/ if $re_opening;
+    $line =~ s/$re_class_pre// if $re_class_pre;
 
     return ( $line, $name );
 }
@@ -73,7 +70,7 @@ sub process_class {
             $line = "";
         }
         if ( $line =~ $re_closing ) {
-            $line =~ s/$re_closing/}/;
+            $line =~ s/$re_closing/}/ if $re_closing;
             $out = $out . $line;
             last;
         }
@@ -88,7 +85,7 @@ sub process_class {
 
             $line =~ s/\Q$old_key\E/$key/;
             $line =~ s/\Q$old_val\E/$val/;
-            $line =~ s/$re_assign/:/;
+            $line =~ s/$re_assign/:/ if $re_assign;
         }
 
         # mixins
@@ -103,6 +100,9 @@ sub process_class {
         $out = $out . $line;
     }
 
+    if ($#children > -1) {
+        $out .= "\n";
+    }
     for (@children) {
         $out = $out . "\n" . $_;
     }
@@ -136,7 +136,6 @@ sub process_file {
             $line = process_class( $line, $src, $next_name, $base_dir );
         }
 
-        # print $out $line;
         $out = $out . $line;
     }
 
