@@ -1,0 +1,150 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+use warnings FATAL => 'all';
+use File::Spec::Functions 'catfile';
+use File::Basename;
+use Cwd qw(abs_path);
+
+my %config = ( do "./mcf.pm" );
+
+print "@{[ %config ]}\n";
+
+my $re_opening   = $config{"opening"} // q/\{/;
+my $re_closing   = $config{"closing"} // q/\}/;
+my $re_pre_key   = $config{"pre_key"} // q//;
+my $re_assign    = $config{"assign"}  // q/:/;
+my $re_var_pre   = $config{"var"}     // q/\$/;
+my $re_class_pre = $config{"class"}   // q//;
+my $re_start =
+  qr/^\s*$re_class_pre((?:(?!$re_opening|$re_closing|;).)*?)\s*$re_opening/;
+my $re_identifier      = q/[^\s]+(?<!,)/;
+my $re_identifier_list = q/\((?:\s*[^\s\(\)]+,?\s*)*\)/;
+my $re_key             = qr/$re_pre_key((?:\w|~|\-|$re_var_pre)+)/;
+my $re_val             = q/([^;]*?)/;
+my $re_kv = qr/$re_key\s*$re_assign\s*$re_val\s*;/m; # <key>: val; => (key, val)
+my $re_white_line = q/^\s*$/;
+my $re_import     = q/@import\s*"([^"]+)";/;
+my $re_var        = qr/$re_var_pre($re_identifier)/;
+
+sub process_start {
+    my ( $line, $path ) = @_;
+
+    my ($name) = ( $line =~ $re_start );
+    my $old_name = $name;
+    $name =~ s/&/$path/;
+    $line =~ s/\Q$old_name\E/$name/;
+    $line =~ s/$re_opening/{/;
+    # $line =~ s/\Q$re_class_pre\E//;
+
+    return ( $line, $name );
+}
+
+sub process_class {
+    my ( $fst_line, $src, $name, $base_dir ) = @_;
+    my ($base_indent) = ( $fst_line =~ /^(\s*)/ );
+    $fst_line =~ s/^$base_indent//;
+
+    my $out      = $fst_line;
+    my @children = ();
+
+    if ( $out =~ $re_closing ) {
+        return $out;
+    }
+
+    while ( my $line = <$src> ) {
+        $line =~ s/^\Q$base_indent\E//;
+        my ($indent) = ( $line =~ /^(\s*)/ );
+        if ( not $indent ) {
+            $indent = "";
+        }
+
+        if ( $line =~ $re_start ) {
+            ( $line, my $next_name ) = process_start( $line, $name );
+            push(
+                @children,
+                process_class(
+                    $base_indent . $line,
+                    $src, $next_name, $base_dir
+                )
+            );
+            $out =~ s/\s+$/\n/;
+            $line = "";
+        }
+        if ( $line =~ $re_closing ) {
+            $line =~ s/$re_closing/}/;
+            $out = $out . $line;
+            last;
+        }
+
+        # vars
+        if ( $line =~ $re_kv ) {
+            my $key = ( my $old_key = $1 );
+            my $val = ( my $old_val = $2 );
+
+            $key =~ s/$re_var/--$1/;
+            $val =~ s/$re_var/var(--$1)/;
+
+            $line =~ s/\Q$old_key\E/$key/;
+            $line =~ s/\Q$old_val\E/$val/;
+            $line =~ s/$re_assign/:/;
+        }
+
+        # mixins
+        if ( $line =~ /#($re_identifier)/ ) {
+            my $name = $1;
+            if ( $name =~ /here/i ) {
+                my $apath = abs_path($base_dir);
+                $line =~ s/&here/$apath/gi;
+            }
+        }
+
+        $out = $out . $line;
+    }
+
+    for (@children) {
+        $out = $out . "\n" . $_;
+    }
+
+    return $out;
+}
+
+sub process_file {
+    my ($file)   = @_;
+    my $out_file = ( $file =~ s/\.mss/.css/r );
+    my $out      = "";
+
+    my ( undef, $base_dir ) = fileparse($file);
+    open( my $src,  '<', $file )     or die "Could not open $file: $!";
+    open( my $dist, '>', $out_file ) or die $!;
+
+    while ( my $line = <$src> ) {
+
+        # imports
+        if ( $line =~ $re_import ) {
+            my $path = catfile( $base_dir, $1 );
+            printf "importing %s\n", $path;
+            my $res = process_file($path);
+            $res  =~ s/\s+$//;
+            $line =~ s/$re_import/$res/;
+        }
+
+        if ( $line =~ $re_start ) {
+            my $next_name;
+            ( $line, $next_name ) = process_start( $line, "" );
+            $line = process_class( $line, $src, $next_name, $base_dir );
+        }
+
+        # print $out $line;
+        $out = $out . $line;
+    }
+
+    print $dist $out;
+
+    close $src;
+    close $dist;
+    return $out;
+}
+
+process_file(@ARGV);
