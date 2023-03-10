@@ -61,22 +61,38 @@ my $re_start =
   qr/^\s*$re_class_pre((?:(?!$re_pre_sec|$re_opening|$re_closing|;).)*?)\s*$re_opening/ms;
 my $re_start_sec =
     qr/^\s*$re_pre_sec((?:(?!$re_opening|$re_closing|;).)*?)\s*$re_opening/ms;
-my $re_identifier      = q/[^\s]+(?<!,)/;
+my $re_identifier      = q/[^\s\(]+(?<!,)/;
 my $re_identifier_list = q/\((?:\s*[^\s\(\)]+,?\s*)*\)/;
-my $re_key             = qr/$re_pre_key((?:\w|~|\-|$re_var_pre)+)/ms;
+my $re_key             = qr/$re_pre_key((?:\w|~|\-|$re_var_pre|@[^s\(]+\([^\)]*\))+)/ms;
 my $re_val             = q/([^;]*?)/;
 my $re_kv              = qr/$re_key\s*$re_assign\s*$re_val\s*;/ms; # <key>: val; => (key, val)
 my $re_white_line      = q/^\s*$/;
 my $re_import          = q/@import\s*"([^"]+)";/;
 my $re_var             = qr/$re_var_pre($re_identifier)/ms;
-my $re_indent          = qr/[ \t\v]/m;
+my $re_indent          = qr/[ \t]/ms;
 
 
 sub process_common {
-    my ( $line, $matched ) = @_;
+    my ( $line, $matched, $base_dir ) = @_;
+    $line =~ s/^\s*$//;
     if ( $line =~ $re_comm_line ) {
         $matched += 1;
         $line =~ s|^(\s*)$re_comm_line(\s*)(.*)(\n*)$|$1/*$2$3$2*/$4|m;    
+    }
+    # mixins
+    if ( $line =~ /@($re_identifier)/gms ) {
+        my $name = $1;
+        if ( $name =~ /^here$/gmi ) {
+            $matched += 1;
+            my $apath = abs_path($base_dir);
+            $line =~ s/&here/$apath/gmi;
+        }
+        if ( $name =~ /^all$/gmi ) {
+            $matched += 1;
+            my ( $key, $val ) = ( $line =~ $re_kv );
+            my ( $arg ) = ( $key =~ /\@all\s*\(([^\)]*)\)/gmi );
+            $line = join ("", map { $line =~ s/\Q$key\E/$_/r } (split( /\s*,\s*/, $arg )));
+        }
     }
 
     return ( $line, $matched );
@@ -85,7 +101,8 @@ sub process_common {
 sub process_start {
     my ( $line, $path ) = @_;
 
-    my ($name) = ( $line =~ $re_start );
+    my ( $name ) = ( $line =~ $re_start );
+    print "[class] name='$name'\n";
     my $old_name = $name;
     $name =~ s/&/$path/;
     $line =~ s/^\n*//gms;
@@ -134,6 +151,10 @@ sub process_class {
                     $base_indent
                 );
 
+            # $s =~ s/^\n*//gms;
+            # print ("matches?: " . ($line =~ /^\n+/) . "\n");
+            # print "s=\n$s\n";
+
             push(
                 @children,
                 $s
@@ -179,17 +200,7 @@ sub process_class {
             $line =~ s/$re_assign/:/gms if $re_assign;
         }
 
-        # mixins
-        if ( $line =~ /#($re_identifier)/gms ) {
-            my $name = $1;
-            if ( $name =~ /here/gmi ) {
-                $matched += 1;
-                my $apath = abs_path($base_dir);
-                $line =~ s/&here/$apath/gmi;
-            }
-        }
-
-        ($line, $matched) = process_common( $line, $matched );
+        ( $line, $matched ) = process_common( $line, $matched, $base_dir );
 
         if ($matched) {
             $matched = 0;
@@ -200,10 +211,12 @@ sub process_class {
 
     $out .= $line;
 
-    my ($indent) = ($out =~ /^($re_indent*)/gms);
+    my ($indent) = ($out =~ /^($re_indent*)/gm);
+    print("children:\n" . (join "", @children) . "\n");
     for (@children) {
         my ($line_indent) = ($_ =~ /^($re_indent*)/);
-        $_ =~ s/^$line_indent/$indent/gms;
+        print "line:\n$_;line_indent='$line_indent', indent='$indent'\n";
+        $_ =~ s/^$line_indent/$indent/gm;
         $out = $out . "\n" . $_;
     }
 
@@ -253,6 +266,8 @@ sub process_section {
             last;
         }
 
+        ( $line, $matched ) = process_common( $line, $matched, $base_dir );
+
         if ( $matched ) {
             $out .= $line;
             $line = "";
@@ -283,14 +298,15 @@ sub process_file {
         }
         # imports
         if ( $line =~ $re_import ) {
-            my $path = catfile( $base_dir, $1 );
+            my $name = $1;
+            my $path = catfile( $base_dir, $name );
             # printf "importing %s\n", $path;
             my $res = process_file($path, 0);
             $line =~ s/$re_import/$res/;
             $line =~ s/\n*$/\n/s;
 
-            $out =~ s/\n{1,}$/\n\n/s;
-            $out .= "/* source: $path */\n" . $line;
+            $out =~ s/\n+$/\n\n/s;
+            $out .= "/* start: $path */\n\n" . $line . "\n/* end: $path */\n";
             $line = "";
         }
 
@@ -325,7 +341,7 @@ sub process_file {
             }
         }
 
-        ($line, $matched) = process_common( $line, $matched );
+        ( $line, $matched ) = process_common( $line, $matched, $base_dir );
 
         $out .= $line;
     }
