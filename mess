@@ -56,6 +56,7 @@ my $re_assign    = get_or(\%config, "assign" , q/:/);
 my $re_var_pre   = get_or(\%config, "pre_var", q/\$/);
 my $re_class_pre = get_or(\%config, "class"  , q//);
 my $re_pre_sec   = get_or(\%config, "pre_section", q/@/);
+my $re_comm_line = get_or(\%config, "comment_line", qr|//|ms);
 my $re_start =
   qr/^\s*$re_class_pre((?:(?!$re_pre_sec|$re_opening|$re_closing|;).)*?)\s*$re_opening/ms;
 my $re_start_sec =
@@ -68,6 +69,18 @@ my $re_kv              = qr/$re_key\s*$re_assign\s*$re_val\s*;/ms; # <key>: val;
 my $re_white_line      = q/^\s*$/;
 my $re_import          = q/@import\s*"([^"]+)";/;
 my $re_var             = qr/$re_var_pre($re_identifier)/ms;
+my $re_indent          = qr/[ \t\v]/m;
+
+
+sub process_common {
+    my ( $line, $matched ) = @_;
+    if ( $line =~ $re_comm_line ) {
+        $matched += 1;
+        $line =~ s|^(\s*)$re_comm_line(\s*)(.*)(\n*)$|$1/*$2$3$2*/$4|m;    
+    }
+
+    return ( $line, $matched );
+}
 
 sub process_start {
     my ( $line, $path ) = @_;
@@ -96,7 +109,7 @@ sub process_start_sec {
 
 sub process_class {
     my ( $fst_line, $src, $name, $base_dir, $block_indent ) = @_;
-    my ($base_indent) = ( $fst_line =~ /^(\s*)/gms );
+    my ($base_indent) = ( $fst_line =~ /^($re_indent*)/gms );
 
     my $out  = $fst_line;
     my $line = "";
@@ -110,7 +123,7 @@ sub process_class {
     while ( my $_line = <$src> ) {
         $line .= $_line;
         my $matched = 0;
-        my ( $indent ) = ( $line =~ /^(\s*)/ );
+        my ( $indent ) = ( $line =~ qr/^($re_indent*)/ );
         if ( not $indent ) { $indent = ""; }
 
         if ( $line =~ $re_start ) {
@@ -176,6 +189,8 @@ sub process_class {
             }
         }
 
+        ($line, $matched) = process_common( $line, $matched );
+
         if ($matched) {
             $matched = 0;
             $out .= $line;
@@ -185,9 +200,9 @@ sub process_class {
 
     $out .= $line;
 
-    my ($indent) = ($out =~ /^(\s*)/gms);
+    my ($indent) = ($out =~ /^($re_indent*)/gms);
     for (@children) {
-        my ($line_indent) = ($_ =~ /^(\s*)/);
+        my ($line_indent) = ($_ =~ /^($re_indent*)/);
         $_ =~ s/^$line_indent/$indent/gms;
         $out = $out . "\n" . $_;
     }
@@ -249,19 +264,20 @@ sub process_section {
 }
 
 sub process_file {
-    my ($file, $save)   = @_;
-    my $out_file = ( $file =~ s/\.mss/.css/r );
-    my $out      = "";
-    my $block_indent = "";
-    my $matched = 0;
-    my $in = 0;
+    my ($file, $save) = @_;
+    my $out_file      = ( $file =~ s/\.mss/.css/r );
+    my $out           = "";
+    my $block_indent  = "";
+    my $matched       = 0;
+    my $in            = 0;
 
     my ( undef, $base_dir ) = fileparse($file);
     open( my $src,  '<', $file )     or die "Could not open $file: $!";
     open( my $dist, '>', $out_file ) or die $! if $save;
 
     while ( my $line = <$src> ) {
-        my $indent = ($line =~ /^(\s*)/);
+        my ( $indent ) = ($line =~ /^($re_indent*)/);
+
         if ( not $indent ) {
             $indent = "";
         }
@@ -270,29 +286,35 @@ sub process_file {
             my $path = catfile( $base_dir, $1 );
             # printf "importing %s\n", $path;
             my $res = process_file($path, 0);
-            $res  =~ s/\s+$/\n/;
             $line =~ s/$re_import/$res/;
+            $line =~ s/\n*$/\n/s;
+
+            $out =~ s/\n{1,}$/\n\n/s;
+            $out .= "/* source: $path */\n" . $line;
+            $line = "";
         }
 
         if ( $line =~ $re_start ) {
             my $next_name;
             ( $line, $next_name ) = process_start( $line, "" );
-            $out .= process_class( $line, $src, $next_name, $base_dir, $block_indent );
+            $out .= process_class( $indent . $line, $src, $next_name, $base_dir, $block_indent );
             $line = "";
             $matched += 1;
         }
 
         if ( $line =~ $re_start_sec ) {
             $matched += 1;
-            $line = process_start_sec( $line );
-            $out .= process_section( $line, $src, $base_dir );
+            $out .= process_section( 
+                process_start_sec( $line ), 
+                $src, $base_dir 
+            );
             $line = "";
             $in += 1;
         }
 
         if ( $line =~ $re_closing ) {
             $matched += 1;
-            $line =~ s/$re_closing\s*/}\n/gms if $re_closing;
+            $line =~ s/$re_closing$re_indent*/}\n/gms if $re_closing;
             $in -= 1;
             if ($in <= 0) {
                 $out .= $line;
@@ -302,6 +324,8 @@ sub process_file {
                 last;
             }
         }
+
+        ($line, $matched) = process_common( $line, $matched );
 
         $out .= $line;
     }
