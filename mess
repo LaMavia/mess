@@ -11,7 +11,7 @@ sub get_config {
     # my ($file) = @_;
     # my (undef, $base) = fileparse $file;
     my $base = getcwd();
-    print "base: $base\n";
+    # print "base: $base\n";
     my %config = ( do "$base/mcf.pm" );
 
     return \%config;
@@ -55,16 +55,19 @@ my $re_pre_key   = get_or(\%config, "pre_key", q//);
 my $re_assign    = get_or(\%config, "assign" , q/:/);
 my $re_var_pre   = get_or(\%config, "pre_var", q/\$/);
 my $re_class_pre = get_or(\%config, "class"  , q//);
+my $re_pre_sec   = get_or(\%config, "pre_section", q/@/);
 my $re_start =
-  qr/^\s*$re_class_pre((?:(?!$re_opening|$re_closing|;).)*?)\s*$re_opening/;
+  qr/^\s*$re_class_pre((?:(?!$re_pre_sec|$re_opening|$re_closing|;).)*?)\s*$re_opening/ms;
+my $re_start_sec =
+    qr/^\s*$re_pre_sec((?:(?!$re_opening|$re_closing|;).)*?)\s*$re_opening/ms;
 my $re_identifier      = q/[^\s]+(?<!,)/;
 my $re_identifier_list = q/\((?:\s*[^\s\(\)]+,?\s*)*\)/;
-my $re_key             = qr/$re_pre_key((?:\w|~|\-|$re_var_pre)+)/;
+my $re_key             = qr/$re_pre_key((?:\w|~|\-|$re_var_pre)+)/ms;
 my $re_val             = q/([^;]*?)/;
-my $re_kv = qr/$re_key\s*$re_assign\s*$re_val\s*;/m; # <key>: val; => (key, val)
-my $re_white_line = q/^\s*$/;
-my $re_import     = q/@import\s*"([^"]+)";/;
-my $re_var        = qr/$re_var_pre($re_identifier)/;
+my $re_kv              = qr/$re_key\s*$re_assign\s*$re_val\s*;/ms; # <key>: val; => (key, val)
+my $re_white_line      = q/^\s*$/;
+my $re_import          = q/@import\s*"([^"]+)";/;
+my $re_var             = qr/$re_var_pre($re_identifier)/ms;
 
 sub process_start {
     my ( $line, $path ) = @_;
@@ -72,100 +75,200 @@ sub process_start {
     my ($name) = ( $line =~ $re_start );
     my $old_name = $name;
     $name =~ s/&/$path/;
+    $line =~ s/^\n*//gms;
     $line =~ s/\Q$old_name\E/$name/;
-    $line =~ s/$re_opening/{/ if $re_opening;
-    $line =~ s/$re_class_pre// if $re_class_pre;
+    $line =~ s/$re_opening/{/mgs if $re_opening;
+    $line =~ s/$re_class_pre//mgs if $re_class_pre;
 
     return ( $line, $name );
 }
 
+sub process_start_sec {
+    my ( $line ) = @_;
+
+    $line =~ s/^\n*//gms;
+    $line =~ s/$re_pre_sec/@/mgs if $re_pre_sec;
+    $line =~ s/$re_opening/{/mgs if $re_opening;
+    $line =~ s/$re_class_pre//mgs if $re_class_pre;
+
+    return $line;
+}
+
 sub process_class {
-    my ( $fst_line, $src, $name, $base_dir ) = @_;
-    my ($base_indent) = ( $fst_line =~ /^(\s*)/ );
-    $fst_line =~ s/^$base_indent//;
+    my ( $fst_line, $src, $name, $base_dir, $block_indent ) = @_;
+    my ($base_indent) = ( $fst_line =~ /^(\s*)/gms );
 
     my $out  = $fst_line;
+    my $line = "";
     my @children = ();
+    my $in = 0;
 
     if ( $out =~ $re_closing ) {
         return $out;
     }
 
-    while ( my $line = <$src> ) {
+    while ( my $_line = <$src> ) {
+        $line .= $_line;
         my $matched = 0;
-        $line =~ s/^\Q$base_indent\E//;
-        my ($indent) = ( $line =~ /^(\s*)/ );
-        if ( not $indent ) {
-            $indent = "";
-        }
+        my ( $indent ) = ( $line =~ /^(\s*)/ );
+        if ( not $indent ) { $indent = ""; }
 
         if ( $line =~ $re_start ) {
             ( $line, my $next_name ) = process_start( $line, $name );
+            my $s = process_class(
+                    $line,
+                    $src, $next_name, $base_dir,
+                    $base_indent
+                );
+
             push(
                 @children,
-                process_class(
-                    $base_indent . $line,
-                    $src, $next_name, $base_dir
-                )
+                $s
             );
-            $out =~ s/\s+$/\n/;
+
+            $out =~ s/\s$/\n/gsm;
             $line = "";
         }
+        if ( $line =~ $re_start_sec ) {
+            $matched += 1;
+            $out .= process_section( 
+                process_start_sec( $line ), 
+                $src, 
+                $base_dir 
+            );
+            $line = "";
+
+            $in += 1;
+        }
         if ( $line =~ $re_closing ) {
-            $line =~ s/$re_closing/}/ if $re_closing;
-            $out = $out . $line;
-            last;
+            $matched += 1;
+            $line =~ s/^$re_closing\s*/}\n/gms if $re_closing;
+            $in -= 1;
+            if ($in <= 0) {
+                $out .= $line;
+                $block_indent =~ s/^$block_indent//gms;
+                $line = "";
+                last;
+            }
         }
 
         # vars
         if ( $line =~ $re_kv ) {
+            $matched += 1;
             my $key = ( my $old_key = $1 );
             my $val = ( my $old_val = $2 );
 
-            $key =~ s/$re_var/--$1/;
-            $val =~ s/$re_var/var(--$1)/;
+            $key =~ s/$re_var/--$1/gms;
+            $val =~ s/$re_var/var(--$1)/gms;
 
             $line =~ s/\Q$old_key\E/$key/;
             $line =~ s/\Q$old_val\E/$val/;
-            $line =~ s/$re_assign/:/ if $re_assign;
+            $line =~ s/$re_assign/:/gms if $re_assign;
         }
 
         # mixins
-        if ( $line =~ /#($re_identifier)/ ) {
+        if ( $line =~ /#($re_identifier)/gms ) {
             my $name = $1;
-            if ( $name =~ /here/i ) {
+            if ( $name =~ /here/gmi ) {
+                $matched += 1;
                 my $apath = abs_path($base_dir);
-                $line =~ s/&here/$apath/gi;
+                $line =~ s/&here/$apath/gmi;
             }
         }
 
-        $out .= $line;
+        if ($matched) {
+            $matched = 0;
+            $out .= $line;
+            $line = "";
+        }
     }
 
-    if ($#children > -1) {
-        $out .= "\n";
-    }
+    $out .= $line;
+
+    my ($indent) = ($out =~ /^(\s*)/gms);
     for (@children) {
+        my ($line_indent) = ($_ =~ /^(\s*)/);
+        $_ =~ s/^$line_indent/$indent/gms;
         $out = $out . "\n" . $_;
     }
 
     return $out;
 }
 
+sub process_section {
+    my ($fst_line, $src, $base_dir) = @_;
+    my $out = $fst_line;
+    my $line = "";
+    my $matched = 0;
+    my ($fst_indent) = ($fst_line =~ /^(\s*)/);
+    if ( not $fst_indent ) {
+        $fst_indent = "";
+    }
+
+    while (my $_line = <$src>) {
+        $line .= $_line;
+        my ($indent) = ($line =~ /^(\s*)/);
+        if ( not $indent ) {
+            $indent = "";
+        }
+
+        if ( $line =~ $re_start ) {
+            my $next_name;
+            ( $line, $next_name ) = process_start( $line, "" );
+            $line = process_class( $line, $src, $next_name, $base_dir, $indent );
+            $out .= $line;
+            $line = "";
+            $matched += 1;
+        }
+
+        if ( $line =~ $re_start_sec ) {
+            $matched += 1;
+            $line = process_start_sec( $line );
+            $line = process_section( $line, $src, $base_dir );
+            $line =~ s/^/$indent/gms;
+            $out .= $line;
+            $line = "";
+        }
+
+        if ( $line =~ $re_closing ) {
+            $matched += 1;
+            $line =~ s/$re_closing\s*/}\n/gms if $re_closing;
+            $out .= $line;
+            $line = "";
+            last;
+        }
+
+        if ( $matched ) {
+            $out .= $line;
+            $line = "";
+            $matched = 0;
+        }
+    }
+
+    return $out . $line;
+}
+
 sub process_file {
     my ($file, $save)   = @_;
     my $out_file = ( $file =~ s/\.mss/.css/r );
     my $out      = "";
+    my $block_indent = "";
+    my $matched = 0;
+    my $in = 0;
 
     my ( undef, $base_dir ) = fileparse($file);
     open( my $src,  '<', $file )     or die "Could not open $file: $!";
     open( my $dist, '>', $out_file ) or die $! if $save;
 
     while ( my $line = <$src> ) {
+        my $indent = ($line =~ /^(\s*)/);
+        if ( not $indent ) {
+            $indent = "";
+        }
         # imports
         if ( $line =~ $re_import ) {
             my $path = catfile( $base_dir, $1 );
-            printf "importing %s\n", $path;
+            # printf "importing %s\n", $path;
             my $res = process_file($path, 0);
             $res  =~ s/\s+$/\n/;
             $line =~ s/$re_import/$res/;
@@ -174,10 +277,33 @@ sub process_file {
         if ( $line =~ $re_start ) {
             my $next_name;
             ( $line, $next_name ) = process_start( $line, "" );
-            $line = process_class( $line, $src, $next_name, $base_dir );
+            $out .= process_class( $line, $src, $next_name, $base_dir, $block_indent );
+            $line = "";
+            $matched += 1;
         }
 
-        $out = $out . $line;
+        if ( $line =~ $re_start_sec ) {
+            $matched += 1;
+            $line = process_start_sec( $line );
+            $out .= process_section( $line, $src, $base_dir );
+            $line = "";
+            $in += 1;
+        }
+
+        if ( $line =~ $re_closing ) {
+            $matched += 1;
+            $line =~ s/$re_closing\s*/}\n/gms if $re_closing;
+            $in -= 1;
+            if ($in <= 0) {
+                $out .= $line;
+                $out =~ s/^/$block_indent/gm;
+                $block_indent =~ s/^$block_indent//;
+                $line = "";
+                last;
+            }
+        }
+
+        $out .= $line;
     }
 
     print $dist $out if $save;
