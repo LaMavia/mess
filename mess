@@ -122,6 +122,15 @@ sub process_start_sec {
     return $line;
 }
 
+sub post_process {
+    my ( $line ) = @_;
+
+    $line =~ s/$re_start\s*\}//gm;
+    $line =~ s/^\s*$//gms;
+
+    return $line;
+}
+
 sub process_class {
     my ( $fst_line, $src, $name, $base_dir, $block_indent ) = @_;
     my ($base_indent) = ( $fst_line =~ /^($re_indent*)/gms );
@@ -212,7 +221,7 @@ sub process_class {
         $out = $out . "\n" . $_;
     }
 
-    $out =~ s/^\s*$//gms;
+    $out = post_process $out;
 
     return $out;
 }
@@ -346,8 +355,7 @@ sub process_file {
     }
 
     $out .= $line;
-
-    $out =~ s/$re_start\s*\}//gm;
+    $out = post_process $out;
 
     print $dist $out if $save;
 
