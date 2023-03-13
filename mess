@@ -73,10 +73,10 @@ my $re_indent          = qr/[ \t]/ms;
 
 sub process_common {
     my ( $line, $matched, $base_dir ) = @_;
-    $line =~ s/^\s*$//;
+    # $line =~ s/(^\s*$)+/\n/gm;
     if ( $line =~ $re_comm_line ) {
         $matched += 1;
-        $line =~ s|^(\s*)$re_comm_line(\s*)(.*)(\n*)$|$1/*$2$3$2*/$4|m;    
+        $line =~ s|^(\s+)$re_comm_line(\s*)(.*)(\n*)$|$1/*$2$3$2*/$4|m;    
     }
     # mixins
     if ( $line =~ /@($re_identifier)/gms ) {
@@ -87,12 +87,10 @@ sub process_common {
             $line =~ s/&here/$apath/gmi;
         }
         if ( $name =~ /^all$/gmi ) {
-            print "\@all:$line=>\n";
             $matched += 1;
             my ( $key, $val ) = ( $line =~ $re_kv );
             my ( $arg ) = ( $key =~ /\@all\s*\(([^\)]*)\)/gmi );
             $line = join ("", map { $line =~ s/\Q$key\E/$_/r } (split( /\s*,\s*/, $arg )));
-            print "$line"
         }
     }
 
@@ -201,12 +199,9 @@ sub process_class {
         if ($matched) {
             $matched = 0;
             $out .= $line;
-            print "matched:\n$line:out:\n$out";
             $line = "";
         }
     }
-
-    print "[class:$name] pre append:\n$out\n";
 
     $out .= $line;
 
@@ -217,7 +212,7 @@ sub process_class {
         $out = $out . "\n" . $_;
     }
 
-    print "[class:$name]\n$out\n";
+    $out =~ s/^\s*$//gms;
 
     return $out;
 }
@@ -351,6 +346,8 @@ sub process_file {
     }
 
     $out .= $line;
+
+    $out =~ s/$re_start\s*\}//gm;
 
     print $dist $out if $save;
 
