@@ -11,7 +11,6 @@ sub get_config {
     # my ($file) = @_;
     # my (undef, $base) = fileparse $file;
     my $base = getcwd();
-    # print "base: $base\n";
     my %config = ( do "$base/mcf.pm" );
 
     return \%config;
@@ -88,10 +87,12 @@ sub process_common {
             $line =~ s/&here/$apath/gmi;
         }
         if ( $name =~ /^all$/gmi ) {
+            print "\@all:$line=>\n";
             $matched += 1;
             my ( $key, $val ) = ( $line =~ $re_kv );
             my ( $arg ) = ( $key =~ /\@all\s*\(([^\)]*)\)/gmi );
             $line = join ("", map { $line =~ s/\Q$key\E/$_/r } (split( /\s*,\s*/, $arg )));
+            print "$line"
         }
     }
 
@@ -102,9 +103,8 @@ sub process_start {
     my ( $line, $path ) = @_;
 
     my ( $name ) = ( $line =~ $re_start );
-    print "[class] name='$name'\n";
     my $old_name = $name;
-    $name =~ s/&/$path/;
+    $name =~ s/&/$path/gms;
     $line =~ s/^\n*//gms;
     $line =~ s/\Q$old_name\E/$name/;
     $line =~ s/$re_opening/{/mgs if $re_opening;
@@ -151,16 +151,12 @@ sub process_class {
                     $base_indent
                 );
 
-            # $s =~ s/^\n*//gms;
-            # print ("matches?: " . ($line =~ /^\n+/) . "\n");
-            # print "s=\n$s\n";
-
             push(
                 @children,
                 $s
             );
 
-            $out =~ s/\s$/\n/gsm;
+            $out =~ s/\s$/\n/s;
             $line = "";
         }
         if ( $line =~ $re_start_sec ) {
@@ -205,20 +201,23 @@ sub process_class {
         if ($matched) {
             $matched = 0;
             $out .= $line;
+            print "matched:\n$line:out:\n$out";
             $line = "";
         }
     }
 
+    print "[class:$name] pre append:\n$out\n";
+
     $out .= $line;
 
     my ($indent) = ($out =~ /^($re_indent*)/gm);
-    print("children:\n" . (join "", @children) . "\n");
     for (@children) {
         my ($line_indent) = ($_ =~ /^($re_indent*)/);
-        print "line:\n$_;line_indent='$line_indent', indent='$indent'\n";
         $_ =~ s/^$line_indent/$indent/gm;
         $out = $out . "\n" . $_;
     }
+
+    print "[class:$name]\n$out\n";
 
     return $out;
 }
@@ -285,12 +284,14 @@ sub process_file {
     my $block_indent  = "";
     my $matched       = 0;
     my $in            = 0;
+    my $line          = "";
 
     my ( undef, $base_dir ) = fileparse($file);
     open( my $src,  '<', $file )     or die "Could not open $file: $!";
     open( my $dist, '>', $out_file ) or die $! if $save;
 
-    while ( my $line = <$src> ) {
+    while ( my $_line = <$src> ) {
+        $line .= $_line;
         my ( $indent ) = ($line =~ /^($re_indent*)/);
 
         if ( not $indent ) {
@@ -300,20 +301,19 @@ sub process_file {
         if ( $line =~ $re_import ) {
             my $name = $1;
             my $path = catfile( $base_dir, $name );
-            # printf "importing %s\n", $path;
             my $res = process_file($path, 0);
             $line =~ s/$re_import/$res/;
-            $line =~ s/\n*$/\n/s;
+            $line =~ s/\n+$/\n/s;
 
             $out =~ s/\n+$/\n\n/s;
-            $out .= "/* start: $path */\n\n" . $line . "\n/* end: $path */\n";
+            $out .= $line . "\n";
             $line = "";
         }
 
         if ( $line =~ $re_start ) {
             my $next_name;
             ( $line, $next_name ) = process_start( $line, "" );
-            $out .= process_class( $indent . $line, $src, $next_name, $base_dir, $block_indent );
+            $out .= process_class( $indent . $line, $src, $next_name, $base_dir, $block_indent ) . "\n";
             $line = "";
             $matched += 1;
         }
@@ -323,7 +323,7 @@ sub process_file {
             $out .= process_section( 
                 process_start_sec( $line ), 
                 $src, $base_dir 
-            );
+            ) . "\n";
             $line = "";
             $in += 1;
         }
@@ -343,8 +343,14 @@ sub process_file {
 
         ( $line, $matched ) = process_common( $line, $matched, $base_dir );
 
-        $out .= $line;
+        if ( $matched ) {
+            $out .= $line;
+            $line = "";
+            $matched = 0;
+        }
     }
+
+    $out .= $line;
 
     print $dist $out if $save;
 
