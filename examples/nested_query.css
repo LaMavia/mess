@@ -1,0 +1,9 @@
+.x {
+  color: rebeccapurple;
+}
+
+@media screen {
+  .x {
+    color: red;
+  }
+}

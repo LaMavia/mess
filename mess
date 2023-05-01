@@ -8,10 +8,9 @@ use File::Basename;
 use Cwd qw(abs_path getcwd);
 
 sub get_config {
-    # my ($file) = @_;
-    # my (undef, $base) = fileparse $file;
     my $base = getcwd();
-    my %config = ( do "$base/mcf.pm" );
+    my $config_name = "$base/mcf.pm";
+    my %config = (-e $config_name) ? ( do "$config_name" ) : ();
 
     return \%config;
 }
@@ -168,10 +167,14 @@ sub process_class {
         }
         if ( $line =~ $re_start_sec ) {
             $matched += 1;
-            $out .= process_section( 
+            push(
+              @children,
+              process_section( 
                 process_start_sec( $line ), 
                 $src, 
-                $base_dir 
+                $base_dir,
+                $name
+              )
             );
             $line = "";
 
@@ -227,7 +230,7 @@ sub process_class {
 }
 
 sub process_section {
-    my ($fst_line, $src, $base_dir) = @_;
+    my ($fst_line, $src, $base_dir, $name) = @_;
     my $out = $fst_line;
     my $line = "";
     my $matched = 0;
@@ -245,7 +248,7 @@ sub process_section {
 
         if ( $line =~ $re_start ) {
             my $next_name;
-            ( $line, $next_name ) = process_start( $line, "" );
+            ( $line, $next_name ) = process_start( $line, $name );
             $line = process_class( $line, $src, $next_name, $base_dir, $indent );
             $out .= $line;
             $line = "";
@@ -255,7 +258,7 @@ sub process_section {
         if ( $line =~ $re_start_sec ) {
             $matched += 1;
             $line = process_start_sec( $line );
-            $line = process_section( $line, $src, $base_dir );
+            $line = process_section( $line, $src, $base_dir, $name );
             $line =~ s/^/$indent/gms;
             $out .= $line;
             $line = "";
@@ -326,7 +329,7 @@ sub process_file {
             $matched += 1;
             $out .= process_section( 
                 process_start_sec( $line ), 
-                $src, $base_dir 
+                $src, $base_dir, ""
             ) . "\n";
             $line = "";
             $in += 1;
